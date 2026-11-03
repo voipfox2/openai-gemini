@@ -357,7 +357,7 @@ const parseImg = async (url) => {
     inlineData: {
       mimeType,
       data,
-    },
+    }
   };
 };
 
