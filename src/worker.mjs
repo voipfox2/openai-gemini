@@ -293,23 +293,29 @@ const transformConfig = (req, isV3) => {
     }
   }
   if (req.response_format) {
-    switch (req.response_format.type) {
-      case "json_schema":
-        adjustSchema(req.response_format);
-        cfg.responseSchema = req.response_format.json_schema?.schema;
-        if (cfg.responseSchema && "enum" in cfg.responseSchema) {
-          cfg.responseMimeType = "text/x.enum";
+    try {
+      switch (req.response_format.type) {
+        case "json_schema":
+          adjustSchema(req.response_format);
+          cfg.responseSchema = req.response_format.json_schema?.schema;
+          if (cfg.responseSchema && "enum" in cfg.responseSchema) {
+            cfg.responseMimeType = "text/x.enum";
+            break;
+          }
+          // eslint-disable-next-line no-fallthrough
+        case "json_object":
+          cfg.responseMimeType = "application/json";
           break;
-        }
-        // eslint-disable-next-line no-fallthrough
-      case "json_object":
-        cfg.responseMimeType = "application/json";
-        break;
-      case "text":
-        cfg.responseMimeType = "text/plain";
-        break;
-      default:
-        throw new HttpError("Unsupported response_format.type", 400);
+        case "text":
+          cfg.responseMimeType = "text/plain";
+          break;
+        default:
+          // 未知 type 时降级为纯文本，避免触发 400（WorkBuddy/dev-god 等客户端可能发送非标准 type）
+          cfg.responseMimeType = "text/plain";
+      }
+    } catch {
+      cfg.responseMimeType = "text/plain";
+      delete cfg.responseSchema;
     }
   }
   if (req.reasoning_effort) {
@@ -318,6 +324,12 @@ const transformConfig = (req, isV3) => {
         ? { thinkingLevel: thinkingLevelMap[req.reasoning_effort] ?? req.reasoning_effort }
         : { thinkingBudget: thinkingBudgetMap[req.reasoning_effort] };
   }
+  // --- 加固：钳制 Gemini 会拒绝的参数（解决 WorkBuddy 400）---
+  // Gemini Flash 不支持多候选，n>1 会返回 INVALID_ARGUMENT 400
+  if (cfg.candidateCount && cfg.candidateCount !== 1) cfg.candidateCount = 1;
+  if (typeof cfg.temperature === "number") cfg.temperature = Math.min(2, Math.max(0, cfg.temperature));
+  if (typeof cfg.topP === "number") cfg.topP = Math.min(1, Math.max(0, cfg.topP));
+  if (typeof cfg.topK === "number") cfg.topK = Math.min(128, Math.max(1, cfg.topK));
   return cfg;
 };
 
