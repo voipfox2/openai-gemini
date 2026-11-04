@@ -469,12 +469,15 @@ const transformMessages = async (messages) => {
         continue;
       case "tool":
         // eslint-disable-next-line no-case-declarations
-        let { role, parts } = contents[contents.length - 1] ?? {};
-        if (role !== "function") {
+        let { parts } = contents[contents.length - 1] ?? {};
+        // Gemini 新版上游不再接受 role "function"（旧版会忽略），
+        // functionResponse 必须归入 role "user"。用显式标记合并连续的
+        // 多条工具结果，避免与真正的 user 消息混淆。
+        if (!parts?.fnResponse) {
           const calls = parts?.calls;
-          parts = []; parts.calls = calls;
+          parts = []; parts.calls = calls; parts.fnResponse = true;
           contents.push({
-            role: "function", // ignored
+            role: "user",
             parts
           });
         }
