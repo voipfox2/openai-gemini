@@ -226,17 +226,48 @@ async function handleCompletions (req, apiKey) {
   return new Response(body, fixCors(response));
 }
 
+// Gemini's function declaration Schema accepts only a subset of JSON Schema
+// keywords. OpenAI-style tools carry unsupported ones, which Google rejects
+// with 400 "Invalid JSON payload received. Unknown name ...".
+// Dropping them only relaxes constraints; it never breaks the calling protocol.
+const UNSUPPORTED_SCHEMA_KEYS = [
+  "additionalProperties", "$schema", "$id", "$ref", "$defs", "definitions",
+  "strict", "patternProperties", "unevaluatedProperties", "propertyNames",
+  "const", "examples", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+  "minLength", "maxLength", "minProperties", "maxProperties", "uniqueItems",
+  "contains", "allOf", "oneOf", "not", "if", "then", "else",
+];
+const SCHEMA_HINT_KEYS = [
+  "type", "properties", "items", "anyOf", "oneOf", "allOf", "enum", "$ref", "format",
+];
+// Structural keys can also identify a schema node that has no "type" at all.
+const STRUCTURAL_SCHEMA_KEYS = [
+  "additionalProperties", "$schema", "$id", "$ref", "$defs", "definitions",
+  "strict", "patternProperties", "unevaluatedProperties", "propertyNames",
+];
 const adjustProps = (schemaPart) => {
   if (typeof schemaPart !== "object" || schemaPart === null) {
     return;
   }
   if (Array.isArray(schemaPart)) {
     schemaPart.forEach(adjustProps);
-  } else {
-    if (schemaPart.type === "object" && schemaPart.properties && schemaPart.additionalProperties === false) {
-      delete schemaPart.additionalProperties;
+    return;
+  }
+  // Only scrub schema nodes; "properties" is a name -> schema map, whose keys
+  // are parameter names and must never be deleted.
+  const isSchemaNode = SCHEMA_HINT_KEYS.some(key => key in schemaPart)
+    || STRUCTURAL_SCHEMA_KEYS.some(key => key in schemaPart);
+  if (isSchemaNode) {
+    for (const key of UNSUPPORTED_SCHEMA_KEYS) {
+      delete schemaPart[key];
     }
-    Object.values(schemaPart).forEach(adjustProps);
+  }
+  for (const [key, value] of Object.entries(schemaPart)) {
+    if (key === "properties" && value && typeof value === "object" && !Array.isArray(value)) {
+      Object.values(value).forEach(adjustProps);
+    } else {
+      adjustProps(value);
+    }
   }
 };
 const adjustSchema = (schema) => {
@@ -528,12 +559,23 @@ const transformTools = (req) => {
   return { tools, tool_config };
 };
 
-const transformRequest = async (req, isV3) => ({
-  ...await transformMessages(req.messages),
-  safetySettings,
-  generationConfig: transformConfig(req,isV3),
-  ...transformTools(req),
-});
+const transformRequest = async (req, isV3) => {
+  const body = {
+    ...await transformMessages(req.messages),
+    safetySettings,
+    generationConfig: transformConfig(req, isV3),
+    ...transformTools(req),
+  };
+  // Scrub only schema-bearing sections (tool declarations and response_schema),
+  // never message contents or tool results, before Google's strict parser sees them.
+  if (body.tools) {
+    adjustProps(body.tools);
+  }
+  if (body.generationConfig?.response_schema) {
+    adjustProps(body.generationConfig.response_schema);
+  }
+  return body;
+};
 
 const generateId = () => {
   const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
