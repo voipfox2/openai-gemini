@@ -357,8 +357,11 @@ const transformFnResponse = ({ content, tool_call_id }, parts) => {
   try {
     response = JSON.parse(content);
   } catch (err) {
-    console.error("Error parsing function response content:", err);
-    throw new HttpError("Invalid function response: " + content, 400);
+    // 客户端工具结果常为纯文本（如带行号的文件内容、"No files found (...)"），
+    // 并非 JSON。Gemini 的 functionResponse.response 只要求是对象，
+    // 因此把纯文本包装为 { result: text } 而不是直接抛 400。
+    console.error("Function response is not JSON, wrapping as text:", err);
+    response = { result: typeof content === "string" ? content : String(content ?? "") };
   }
   if (typeof response !== "object" || response === null || Array.isArray(response)) {
     response = { result: response };
