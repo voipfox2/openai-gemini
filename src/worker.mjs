@@ -385,8 +385,10 @@ const transformFnResponse = ({ content, tool_call_id }, parts) => {
   };
 };
 
-const transformFnCalls = ({ tool_calls }) => {
+const transformFnCalls = ({ tool_calls, extra_content }) => {
   const calls = {};
+  // 客户端可能只保留 tool_call 级或 message 级的签名，两者都作兜底
+  const msgSig = extra_content?.google?.thought_signature;
   const parts = tool_calls.map(({ function: { arguments: argstr, name }, id, type, extra_content }, i) => {
     if (type !== "function") {
       throw new HttpError(`Unsupported tool_call type: "${type}"`, 400);
@@ -405,7 +407,7 @@ const transformFnCalls = ({ tool_calls }) => {
         name,
         args,
       },
-      thoughtSignature: extra_content?.google?.thought_signature,
+      thoughtSignature: extra_content?.google?.thought_signature ?? msgSig,
     };
   });
   parts.calls = calls;
@@ -551,11 +553,14 @@ const SEP = "\n\n|>";
 function transformCandidates (key, cand) {
   const message = { role: "assistant", content: [] };
   let thought_signature;
+  let fnSig;
   for (const part of cand.content?.parts ?? []) {
     if (part.functionCall) {
       const fc = part.functionCall;
       message.tool_calls ??= [];
-      const thought_signature = fc.thoughtSignature;
+      // Gemini 新版把 thoughtSignature 放在 part 顶层（旧版在 functionCall 内），
+      // 两处都尝试，避免签名丢失导致回传时上游拒绝 functionCall。
+      const sig = part.thoughtSignature ?? fc.thoughtSignature;
       message.tool_calls.push({
         id: fc.id ?? "call_" + generateId(),
         type: "function",
@@ -563,8 +568,9 @@ function transformCandidates (key, cand) {
           name: fc.name,
           arguments: JSON.stringify(fc.args),
         },
-        extra_content: thought_signature ? {google: { thought_signature }} : undefined,
+        extra_content: sig ? {google: { thought_signature: sig }} : undefined,
       });
+      if (sig && !fnSig) { fnSig = sig; }
     } else if (typeof part.text === "string") {
       const len = message.content.length;
       if (part.thought !== this.isThinking) {
@@ -594,8 +600,9 @@ function transformCandidates (key, cand) {
     }
   }
   message.content = message.content.join("") ?? null;
-  if (thought_signature) {
-    message.extra_content = {google: { thought_signature }};
+  const finalSig = thought_signature ?? fnSig;
+  if (finalSig) {
+    message.extra_content = {google: { thought_signature: finalSig }};
   }
   return {
     index: cand.index ?? 0, // 0-index is absent in new -002 models response
